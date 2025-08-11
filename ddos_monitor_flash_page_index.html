@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DDOS Monitor — Minimal Alert Page</title>
+  <style>
+    :root{
+      --ok:#10b981; /* green */
+      --warn:#f59e0b; /* amber */
+      --bad:#ef4444; /* red */
+      --bg:#ffffff;  /* white */
+    }
+    html, body {
+      margin: 0; height: 100%;
+      background: var(--bg);
+      color: #111827; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Noto Sans, Ubuntu, Cantarell, Helvetica Neue, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+    }
+    .page {
+      min-height: 100%; display: grid; place-items: center;
+    }
+    .card {
+      width: min(700px, 92vw);
+      border: 1px solid #e5e7eb; border-radius: 16px; padding: 28px;
+      box-shadow: 0 10px 20px rgba(0,0,0,0.06);
+      text-align: center;
+      background: white;
+    }
+    h1 { font-size: clamp(22px, 3.2vw, 28px); margin: 0 0 8px; }
+    p { margin: 8px 0 0; color: #4b5563; }
+
+    .status {
+      display:inline-flex; align-items:center; gap:10px; margin-top:16px;
+      padding:10px 14px; border-radius: 999px; border:1px solid #e5e7eb;
+      background:#fff;
+      font-weight:600; letter-spacing:0.2px;
+    }
+    .dot { width:12px; height:12px; border-radius:999px; background: var(--ok); box-shadow:0 0 0 2px rgba(16,185,129,.15); }
+    .status.ok .dot{ background: var(--ok); }
+    .status.warn .dot{ background: var(--warn); box-shadow:0 0 0 2px rgba(245,158,11,.15); }
+    .status.bad .dot{ background: var(--bad); box-shadow:0 0 0 2px rgba(239,68,68,.15); }
+
+    .meta { display:flex; flex-wrap:wrap; justify-content:center; gap:14px; margin-top:14px; }
+    .pill { padding:8px 12px; border-radius:999px; background:#f9fafb; border:1px solid #eef2f7; font-size:14px; color:#374151; }
+
+    .actions { display:flex; gap:10px; justify-content:center; margin-top:18px; }
+    button{
+      border:1px solid #e5e7eb; background:#fff; padding:10px 14px; border-radius:10px; cursor:pointer;
+      font-weight:600;
+    }
+    button:hover{ background:#f9fafb; }
+
+    /* Background flash (accessibility note: intense flashing can harm photosensitive users) */
+    @keyframes flash { 0%, 49% { background: #ffffff; } 50%, 100% { background: #ff0000; } }
+    body.alerting { animation: flash 1s steps(2, end) infinite; }
+
+    /* Subtle border flash alternative (enabled automatically if user prefers reduced motion) */
+    @media (prefers-reduced-motion: reduce) {
+      body.alerting { animation: none; }
+      .card { animation: softpulse 1.5s ease-in-out infinite; }
+      @keyframes softpulse { 0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.4); } 50% { box-shadow: 0 0 0 8px rgba(239,68,68,0.15);} }
+    }
+
+    .foot { margin-top: 18px; font-size: 12px; color:#6b7280; }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="card">
+      <h1>DDOS Monitor</h1>
+      <div id="status" class="status ok" aria-live="polite">
+        <span class="dot" aria-hidden="true"></span>
+        <span id="statusText">Normal traffic</span>
+      </div>
+
+      <div class="meta" id="meta">
+        <span class="pill" id="rate">req/s: –</span>
+        <span class="pill" id="unique">unique IPs (1m): –</span>
+        <span class="pill" id="latency">latency (ms): –</span>
+        <span class="pill" id="source">source: none</span>
+      </div>
+
+      <p class="foot">Connect this page to a backend endpoint at <code>/attack-status</code> that returns JSON. See below for format.</p>
+
+      <div class="actions">
+        <button id="simulateOn">Simulate Attack</button>
+        <button id="simulateOff">Clear</button>
+        <button id="reconnect">Reconnect</button>
+      </div>
+
+      <details style="margin-top:14px; text-align:left;">
+        <summary>Expected JSON format for <code>/attack-status</code></summary>
+<pre style="white-space:pre-wrap; background:#f9fafb; padding:12px; border-radius:10px; border:1px solid #e5e7eb;">
+{
+  "active": false,              // true when attack suspected
+  "level": "ok|warn|bad",      // optional severity hint
+  "reason": "threshold crossed: req/s &gt; 500",
+  "reqPerSec": 120,
+  "uniqueIPs1m": 42,
+  "latencyMs": 85,
+  "windowSec": 60
+}
+</pre>
+      </details>
+
+      <p class="foot">Accessibility: flashing backgrounds can trigger photosensitive responses. Consider using the reduced-motion alternative.</p>
+    </section>
+  </main>
+
+  <script>
+    // --- Configuration ---
+    const STATUS_ENDPOINT = "/attack-status"; // change if your backend differs
+    const POLL_MS = 2000;
+
+    // --- Elements ---
+    const statusEl = document.getElementById('status');
+    const statusTextEl = document.getElementById('statusText');
+    const rateEl = document.getElementById('rate');
+    const uniqueEl = document.getElementById('unique');
+    const latencyEl = document.getElementById('latency');
+    const sourceEl = document.getElementById('source');
+
+    const simulateOnBtn  = document.getElementById('simulateOn');
+    const simulateOffBtn = document.getElementById('simulateOff');
+    const reconnectBtn   = document.getElementById('reconnect');
+
+    let manualOverride = false;
+    let lastLatency = null;
+
+    function setSeverity(level, text){
+      statusEl.classList.remove('ok','warn','bad');
+      document.body.classList.remove('alerting');
+
+      if(level === 'bad'){
+        statusEl.classList.add('bad');
+        statusTextEl.textContent = text || 'Attack detected';
+        document.body.classList.add('alerting');
+      } else if(level === 'warn'){
+        statusEl.classList.add('warn');
+        statusTextEl.textContent = text || 'Unusual activity';
+      } else {
+        statusEl.classList.add('ok');
+        statusTextEl.textContent = text || 'Normal traffic';
+      }
+    }
+
+    function updateMeta(d){
+      if(d){
+        rateEl.textContent   = `req/s: ${d.reqPerSec ?? '–'}`;
+        uniqueEl.textContent = `unique IPs (1m): ${d.uniqueIPs1m ?? '–'}`;
+        latencyEl.textContent= `latency (ms): ${lastLatency ?? (d.latencyMs ?? '–')}`;
+        sourceEl.textContent = `source: ${d.source ?? 'polling'}`;
+      }
+    }
+
+    // Manual simulation (front-end only)
+    simulateOnBtn.addEventListener('click', ()=>{
+      manualOverride = true;
+      setSeverity('bad', 'Simulated attack');
+      updateMeta({reqPerSec: 'sim', uniqueIPs1m: 'sim', latencyMs: 'sim', source:'manual'});
+    });
+    simulateOffBtn.addEventListener('click', ()=>{
+      manualOverride = false;
+      setSeverity('ok', 'Normal traffic');
+      updateMeta({reqPerSec: '–', uniqueIPs1m: '–', latencyMs: '–', source:'manual'});
+    });
+
+    // Try WebSocket first; fall back to polling
+    let ws;
+    function connectWS(){
+      try {
+        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+        ws = new WebSocket(`${proto}://${location.host}${STATUS_ENDPOINT}`);
+        ws.onopen = ()=>{ sourceEl.textContent = 'source: websocket'; };
+        ws.onmessage = (evt)=>{
+          try{
+            const d = JSON.parse(evt.data);
+            if(!manualOverride){
+              setSeverity(d.level || (d.active ? 'bad' : 'ok'), d.reason || undefined);
+              updateMeta({...d, source:'websocket'});
+            }
+          }catch(e){ /* ignore */ }
+        };
+        ws.onclose = ()=>{ sourceEl.textContent = 'source: polling'; };
+      } catch(e){ /* ignore */ }
+    }
+
+    connectWS();
+
+    // Polling loop
+    async function poll(){
+      if(manualOverride){
+        setTimeout(poll, POLL_MS);
+        return;
+      }
+      const t0 = performance.now();
+      try{
+        const res = await fetch(STATUS_ENDPOINT, {cache:'no-store'});
+        lastLatency = Math.round(performance.now() - t0);
+        if(res.ok){
+          const d = await res.json();
+          setSeverity(d.level || (d.active ? 'bad' : 'ok'), d.reason || undefined);
+          updateMeta({...d, source:'polling'});
+        } else {
+          setSeverity('warn', 'No monitor connected');
+          updateMeta({reqPerSec:'–', uniqueIPs1m:'–', latencyMs:lastLatency, source:'polling'});
+        }
+      } catch(err){
+        lastLatency = Math.round(performance.now() - t0);
+        setSeverity('warn', 'Cannot reach monitor');
+        updateMeta({reqPerSec:'–', uniqueIPs1m:'–', latencyMs:lastLatency, source:'polling'});
+      }
+      setTimeout(poll, POLL_MS);
+    }
+
+    poll();
+
+    reconnectBtn.addEventListener('click', ()=>{
+      try{ ws && ws.close(); }catch(e){}
+      connectWS();
+    });
+  </script>
+</body>
+</html>
